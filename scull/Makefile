@@ -1,5 +1,5 @@
 # Comment/uncomment the following line to disable/enable debugging
-#DEBUG = y
+DEBUG = y
 
 
 # Add your debugging flag (or not) to CFLAGS
@@ -9,13 +9,17 @@ else
   DEBFLAGS = -O2
 endif
 
-CFLAGS += $(DEBFLAGS)
-CFLAGS += -I$(LDDINC)
+#CFLAGS += $(DEBFLAGS)
+#CFLAGS += -I$(LDDINC)
+
+ccflags-y += $(DEBFLAGS)
+ccflags-y += -I$(LDDINC)
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
 
-scull-objs := main.o pipe.o access.o
+#scull-objs := main.o pipe.o access.o
+scull-objs := main.o
 
 obj-m	:= scull.o
 
