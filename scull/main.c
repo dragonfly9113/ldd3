@@ -72,6 +72,8 @@ int scull_trim(struct scull_dev *dev)
 }
 
 #ifdef SCULL_DEBUG	/* use proc only if debugging */
+
+#if 0 /* obsolete */
 /*
  * The proc filesystem: function to read an entry
  */
@@ -104,6 +106,7 @@ int scull_read_procmem(char *buf, char **start, off_t offset,
 	*eof = 1;
 	return len;
 }
+#endif
 
 /*
  * For now, the seq_file implementation will exist in parallel, The
@@ -194,18 +197,25 @@ static struct file_operations scull_proc_ops = {
 static void scull_create_proc(void)
 {
 	struct proc_dir_entry *entry;
+
+#if 0  /* obsolete */
 	create_proc_read_entry("scullmem", 0 /* default mode */,
 			NULL /* parent dir */, scull_read_procmem,
 			NULL /* client data */);
+
 	entry = create_proc_entry("scullseq", 0, NULL);
 	if (entry)
 		entry->proc_fops = &scull_proc_ops;
+#endif
+
+	entry = proc_create("scullseq", 0, NULL, &scull_proc_ops);
 }
 
 static void scull_remove_proc(void)
 {
 	/* no problem if it was not registered */
-	remove_proc_entry("scullmem", NULL /* parent dir */);
+	//remove_proc_entry("scullmem", NULL /* parent dir */);
+
 	remove_proc_entry("scullseq", NULL);
 }
 
@@ -563,7 +573,7 @@ void scull_cleanup_module(void)
 	}
 
 #ifdef SCULL_DEBUG	/* use proc only if debugging */
-	//scull_remove_proc();
+	scull_remove_proc();
 #endif
 
 	/* cleanup_module is never called if registering failed */
@@ -638,7 +648,7 @@ int scull_init_module(void)
 	//dev += scull_access_init(dev);	
 
 #ifdef SCULL_DEBUG	/* only when debugging */
-	//scull_create_proc();
+	scull_create_proc();
 #endif
 
 	return 0;	/* success */
