@@ -313,7 +313,7 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count,
 
 	/* read only up to the end of this quantum */
 	if (count > quantum - q_pos)
-		count = quantum = q_pos;
+		count = quantum - q_pos;
 
 	if (copy_to_user(buf, dptr->data[s_pos] + q_pos, count)) {
 		retval = -EFAULT;
