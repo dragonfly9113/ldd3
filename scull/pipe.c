@@ -34,10 +34,113 @@ struct scull_pipe {
 
 /* parameters */
 static int scull_p_nr_devs = SCULL_P_NR_DEVS;	/* number of pipe devices */
+int scull_p_buffer = SCULL_P_BUFFER;	/* buffer size */
+dev_t scull_p_devno;			/* Our first device number */
 
+module_param(scull_p_nr_devs, int, 0);
+module_param(scull_p_buffer, int, 0);
 
+static struct scull_pipe *scull_p_devices;
 
+static int scull_p_fasync(int fd, struct file *filp, int mode);
+static int spacefree(struct scull_pipe *dev);
 
+/*
+ * Open and close
+ */
+
+static int scull_p_open(struct inode *inode, struct file *filp)
+{
+	struct scull_pipe *dev;
+
+	dev = container_of(inode->i_cdev, struct scull_pipe, cdev);
+	filp->private_data = dev;
+
+	if (down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
+	if (!dev->buffer) {
+		/* allocate the buffer */
+		dev->buffer = kmalloc(scull_p_buffer, GFP_KERNEL);
+		if (!dev->buffer) {
+			up(&dev->sem);
+			return -ENOMEM;
+		}
+	}
+	dev->buffersize = scull_p_buffer;
+	dev->end = dev->buffer + dev->buffersize;
+	dev->rp = dev->wp = dev->buffer;	/* rd and wr from the beginning */
+
+	/* use f_mode, not f_flags: it's cleaner (fs/open.c tells why) */
+	if (filp->f_mode & FMODE_READ)
+		dev->nreaders++;
+	if (filp->f_mode & FMODE_WRITE)
+		dev->nwriters++;
+	up(&dev->sem);
+
+	return nonseekable_open(inode, filp);
+}
+
+static int scull_p_release(struct inode *inode, struct file *filp)
+{
+	struct scull_pipe *dev = filp->private_data;
+
+	/* remove this filp from the asynchronously notified filp's */
+	scull_p_fasync(-1, filp, 0);
+	down(&dev->sem);
+	if (filp->f_mode & FMODE_READ)
+		dev->nreaders--;
+	if (filp->f_mode & FMODE_WRITE)
+		dev->nwriters--;
+	if (dev->nreaders + dev->nwriters == 0) {
+		kfree(dev->buffer);
+		dev->buffer = NULL;	/* the other fields are not checked on open */
+	}
+	up(&dev->sem);
+	return 0;
+}
+
+/*
+ * Data management: read and write
+ */
+
+static ssize_t scull_p_read (struct file *filp, char __user *buf, size_t count,
+		loff_t *pos)
+{
+	struct scull_pipe *dev = filp->private_data;
+
+	if (down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
+
+	while (dev->rp == dev->wp) {	/* nothing to read */
+		up(&dev->sem);	/* release the lock */
+		if (filp->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		PDEBUG("\"%s\" reading: going to sleep\n", current->comm);
+		if (wait_event_interruptible(dev->inq, (dev->rp != dev->wp)))
+			return -ERESTARTSYS;	/* signal: tell the fs layer to handle it */
+		/* otherwise loop, but first reacquire the lock */
+		if (down_interruptible(&dev->sem))
+			return ERESTARTSYS;
+	}
+	/* ok, data is there, return something */
+	if (dev->wp > dev->rp)
+		count = min(count, (size_t)(dev->wp - dev->rp));
+	else	/* the writer point has wrapped, return data up to dev->end */
+		count = min(count, (size_t)(dev->end - dev->rp));
+	if (copy_to_user(buf, dev->rp, count)) {
+		up(&dev->sem);
+		return -EFAULT;
+	}
+	dev->rp += count;
+	if (dev->rp == dev->end)	
+		dev->rp = dev->buffer;	/* wrapped */
+	up (&dev->sem);
+
+	/* finally, awake any writers and return */
+	wake_up_interruptible(&dev->outq);
+	PDEBUG("\"%s\" did read %li bytes\n", current->comm, (long)count);
+	return count;
+}
 
 
 
