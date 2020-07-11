@@ -18,6 +18,7 @@
 #include <linux/poll.h>		/* includes wait.h */
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
+#include <linux/sched/signal.h>
 
 #include "scull.h"		/* local definitions */
 
@@ -141,6 +142,107 @@ static ssize_t scull_p_read (struct file *filp, char __user *buf, size_t count,
 	PDEBUG("\"%s\" did read %li bytes\n", current->comm, (long)count);
 	return count;
 }
+
+/* Wait for space for writing; caller must hold device semaphore. On
+ * error the semaphore will be released before returning. */
+static int scull_getwritespace(struct scull_pipe *dev, struct file *filp)
+{
+	while (spacefree(dev) == 0) {	/* full */
+		DEFINE_WAIT(wait);
+
+		up(&dev->sem);
+		if (filp->f_flags & O_NONBLOCK)
+			return -EAGAIN;	
+		PDEBUG("\"%s\" writing: going to sleep\n", current->comm);
+		prepare_to_wait(&dev->outq, &wait, TASK_INTERRUPTIBLE);
+		if (spacefree(dev) == 0)
+			schedule();
+		finish_wait(&dev->outq, &wait);
+		if (signal_pending(current))
+			return -ERESTARTSYS;
+		if (down_interruptible(&dev->sem))
+			return -ERESTARTSYS;
+	}
+	return 0;
+}
+
+/* How much space is free? */
+static int spacefree(struct scull_pipe *dev)
+{
+	if (dev->rp == dev->wp)
+		return dev->buffersize - 1;
+	return ((dev->rp + dev->buffersize - dev->wp) % dev->buffersize) - 1;
+}
+
+static ssize_t scull_p_write(struct file *filp, const char __user *buf, size_t count,
+		loff_t *f_pos)
+{
+	struct scull_pipe *dev = filp->private_data;
+	int result;
+
+	if (down_interruptible(&dev->sem))
+		return -ERESTARTSYS;
+
+	/* Make sure there's space to write */
+	result = scull_getwritespace(dev, filp);
+	if (result)
+		return result;	/* scull_getwritespace called up(&dev->sem) */
+
+	/* ok, space is there, accept something */
+	count = min(count, (size_t)spacefree(dev));
+	if (dev->wp >= dev->rp)
+		count = min(count, (size_t)(dev->end - dev->wp));	/* to end of buf */
+	else	/* the write pointer has wrapped, fill up to rp - 1 */
+		count = min(count, (size_t)(dev->rp - dev->wp - 1));
+	PDEBUG("Going to accept %li bytes to %p from %p\n", (long)count, dev->wp, buf);
+	if (copy_from_user(dev->wp, buf, count)) {
+		up (&dev->sem);
+		return -EFAULT;
+	}
+	dev->wp += count;
+	if (dev->wp == dev->end)
+		dev->wp = dev->buffer;	/* wrapped */
+	up(&dev->sem);
+
+	/* finally, awake any reader */
+	wake_up_interruptible(&dev->inq);	/* blocked in read() and select() */
+
+	/* and signal asynchronous readers, explained late in chapter 5 */
+	if (dev->async_queue)
+		kill_fasync(&dev->async_queue, SIGIO, POLL_IN);
+	PDEBUG("\"%s\" did write %li bytes\n", current->comm, (long)count);
+	return count;
+}
+
+static unsigned int scull_p_poll(struct file *filp, poll_table *wait)
+{
+	return 0;
+}
+
+static int scull_p_fasync(int fd, struct file *filp, int mode)
+{
+	return 0;
+}
+
+
+/*
+ * The file operations for the pipe device
+ * (some are overlayered with bare scull)
+ */
+struct file_operations scull_pipe_fops = {
+	.owner = 	THIS_MODULE,
+	.llseek =	no_llseek,
+	.read =		scull_p_read,
+	.write = 	scull_p_write,
+	.poll = 	scull_p_poll,
+	.compat_ioctl =	scull_ioctl,
+	.open = 	scull_p_open,
+	.release = 	scull_p_release,
+	.fasync = 	scull_p_fasync,
+};
+
+
+
 
 
 
