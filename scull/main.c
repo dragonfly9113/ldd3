@@ -574,13 +574,14 @@ void scull_cleanup_module(void)
 
 #ifdef SCULL_DEBUG	/* use proc only if debugging */
 	scull_remove_proc();
+	scull_p_remove_proc();
 #endif
 
 	/* cleanup_module is never called if registering failed */
 	unregister_chrdev_region(devno, scull_nr_devs);
 
 	/* and call the cleanup functions for friend devices */
-	//scull_p_cleanup();
+	scull_p_cleanup();
 	//scull_access_cleanup();
 }
 
@@ -643,12 +644,13 @@ int scull_init_module(void)
 	}
 
 	/* At this point call the init function for any friend device */
-	//dev = MKDEV(scull_major, scull_minor + scull_nr_devs);
-	//dev += scull_p_init(dev);
+	dev = MKDEV(scull_major, scull_minor + scull_nr_devs);
+	dev += scull_p_init(dev);
 	//dev += scull_access_init(dev);	
 
 #ifdef SCULL_DEBUG	/* only when debugging */
 	scull_create_proc();
+	scull_p_create_proc();
 #endif
 
 	return 0;	/* success */

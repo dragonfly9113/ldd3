@@ -224,6 +224,99 @@ static int scull_p_fasync(int fd, struct file *filp, int mode)
 	return 0;
 }
 
+#ifdef SCULL_DEBUG
+
+/*
+ * Here are our sequence iteration methods. Our "position" is
+ * simply the device number.
+ */
+static void *scull_p_seq_start(struct seq_file *s, loff_t *pos)
+{
+	if (*pos >= scull_p_nr_devs)
+		return NULL;	/* No more to read */
+	return scull_p_devices + *pos;
+}
+
+static void *scull_p_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+	(*pos)++;
+	if (*pos >= scull_p_nr_devs)	
+		return NULL;
+	return scull_p_devices + *pos;
+}
+
+static void scull_p_seq_stop(struct seq_file *s, void *v)
+{
+	/* Actually, there is nothing to do here */
+}
+
+static int scull_p_seq_show(struct seq_file *s, void *v)
+{
+	int i;
+	struct scull_pipe *p = (struct scull_pipe *) v;
+	
+	if (down_interruptible(&p->sem))
+		return -ERESTARTSYS;
+	seq_printf(s, "Default buffersize is %i\n", scull_p_buffer);
+	for (i = 0; i < scull_p_nr_devs; i++) {
+		seq_printf(s, "\nDevice %i: %p\n", i, p);
+		seq_printf(s, "   Buffer: %p to %p (%i bytes)\n", p->buffer, p->end, p->buffersize);
+		seq_printf(s, "   rp %p   wp %p\n", p->rp, p->wp);
+		seq_printf(s, "   readers %i   writers %i\n", p->nreaders, p->nwriters);
+	}
+	up(&p->sem);
+	return 0;
+}
+
+/*
+ * Tie the sequence operations up.
+ */
+static struct seq_operations scull_p_seq_ops = {
+	.start = scull_p_seq_start,
+	.next  = scull_p_seq_next,
+	.stop  = scull_p_seq_stop,
+	.show  = scull_p_seq_show
+};
+
+/*
+ * Now to implement the /proc file we need only make an open
+ * method which sets up the sequence operators.
+ */
+static int scull_p_proc_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &scull_p_seq_ops);
+}
+
+/*
+ * Create a set of file operations for our proc file.
+ */
+static struct file_operations scull_p_proc_ops = {
+	.owner	 = THIS_MODULE,
+	.open	 = scull_p_proc_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = seq_release
+};
+
+/*
+ * Actually create (and remove) the /proc file(s).
+ */
+void scull_p_create_proc(void)
+{
+	struct proc_dir_entry *entry;
+
+	entry = proc_create("scullpseq", 0, NULL, &scull_p_proc_ops);
+}
+
+void scull_p_remove_proc(void)
+{
+	/* no problem if it was not registered */
+	remove_proc_entry("scullpseq", NULL);
+}
+
+
+#endif	/* SCULL_DEBUG */
+
 
 /*
  * The file operations for the pipe device

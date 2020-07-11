@@ -104,6 +104,11 @@ extern int scull_p_buffer;	/* pipe.c */
 
 int	scull_p_init(dev_t dev);
 void	scull_p_cleanup(void);
+#ifdef SCULL_DEBUG
+void 	scull_p_create_proc(void);
+void	scull_p_remove_proc(void);
+#endif
+
 int	scull_access_init(dev_t dev);
 void	scull_access_cleanup(void);
 
