@@ -57,6 +57,8 @@ static int scull_p_open(struct inode *inode, struct file *filp)
 	dev = container_of(inode->i_cdev, struct scull_pipe, cdev);
 	filp->private_data = dev;
 
+	PDEBUG("scull_p_open() is called\n");
+
 	if (down_interruptible(&dev->sem))
 		return -ERESTARTSYS;
 	if (!dev->buffer) {
@@ -66,10 +68,14 @@ static int scull_p_open(struct inode *inode, struct file *filp)
 			up(&dev->sem);
 			return -ENOMEM;
 		}
+
+		dev->buffersize = scull_p_buffer;
+		dev->end = dev->buffer + dev->buffersize;
+		dev->rp = dev->wp = dev->buffer;	/* rd and wr from the beginning */
 	}
-	dev->buffersize = scull_p_buffer;
-	dev->end = dev->buffer + dev->buffersize;
-	dev->rp = dev->wp = dev->buffer;	/* rd and wr from the beginning */
+	//dev->buffersize = scull_p_buffer;
+	//dev->end = dev->buffer + dev->buffersize;
+	//dev->rp = dev->wp = dev->buffer;	/* rd and wr from the beginning */
 
 	/* use f_mode, not f_flags: it's cleaner (fs/open.c tells why) */
 	if (filp->f_mode & FMODE_READ)
@@ -84,6 +90,8 @@ static int scull_p_open(struct inode *inode, struct file *filp)
 static int scull_p_release(struct inode *inode, struct file *filp)
 {
 	struct scull_pipe *dev = filp->private_data;
+
+	PDEBUG("scull_p_release() is called\n");
 
 	/* remove this filp from the asynchronously notified filp's */
 	scull_p_fasync(-1, filp, 0);
@@ -252,18 +260,17 @@ static void scull_p_seq_stop(struct seq_file *s, void *v)
 
 static int scull_p_seq_show(struct seq_file *s, void *v)
 {
-	int i;
 	struct scull_pipe *p = (struct scull_pipe *) v;
 	
 	if (down_interruptible(&p->sem))
 		return -ERESTARTSYS;
-	seq_printf(s, "Default buffersize is %i\n", scull_p_buffer);
-	for (i = 0; i < scull_p_nr_devs; i++) {
-		seq_printf(s, "\nDevice %i: %p\n", i, p);
-		seq_printf(s, "   Buffer: %p to %p (%i bytes)\n", p->buffer, p->end, p->buffersize);
-		seq_printf(s, "   rp %p   wp %p\n", p->rp, p->wp);
-		seq_printf(s, "   readers %i   writers %i\n", p->nreaders, p->nwriters);
-	}
+
+	seq_printf(s, "Default buffersize is %i, scull_p_devices = %p\n", scull_p_buffer, scull_p_devices);
+	seq_printf(s, "\nDevice %i: %p\n", (int)(p - scull_p_devices), p);
+	seq_printf(s, "   Buffer: %p to %p (%i bytes)\n", p->buffer, p->end, p->buffersize);
+	seq_printf(s, "   rp %p   wp %p		wp-rp= %li\n", p->rp, p->wp, p->wp - p->rp);
+	seq_printf(s, "   readers %i   writers %i\n", p->nreaders, p->nwriters);
+
 	up(&p->sem);
 	return 0;
 }
@@ -356,6 +363,8 @@ int scull_p_init(dev_t firstdev)
 {
 	int i, result;
 
+	PDEBUG("scull_p_init() is called, firstdev = %i\n", firstdev);
+
 	result = register_chrdev_region(firstdev, scull_p_nr_devs, "scullp");
 	if (result < 0) {
 		printk(KERN_NOTICE "Unable to get scullp region, error %d\n", result);
@@ -393,6 +402,7 @@ void scull_p_cleanup(void)
 	/* obsolete */
 	//remove_proc_entry("scullpipe", NULL);
 #endif
+	PDEBUG("scull_p_cleanup() is called\n");
 
 	if (!scull_p_devices)
 		return;	/* nothing else to release */
