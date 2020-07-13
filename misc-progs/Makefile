@@ -2,7 +2,7 @@
 #FILES = nbtest load50 mapcmp polltest mapper setlevel setconsole inp outp \
 	datasize dataalign netifdebug
 
-FILES = nbtest
+FILES = nbtest asynctest
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 INCLUDEDIR = $(KERNELDIR)/include
