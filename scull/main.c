@@ -3,7 +3,6 @@
  * Compiled on 4.15.0-106-generic #107~16.04.1-Ubuntu SMP
  */
 
-//#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
@@ -17,9 +16,8 @@
 #include <linux/fcntl.h>	/* O_ACCMODE */
 #include <linux/seq_file.h>
 #include <linux/cdev.h>
-
-//#include <asm/system.h>	/* cli(), *_flags */
 #include <linux/uaccess.h>	/* copy_*_user */
+#include <linux/delay.h>
 
 #include "scull.h"		/* local definitions */
 
@@ -315,13 +313,15 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count,
 	if (count > quantum - q_pos)
 		count = quantum - q_pos;
 
+	ssleep(5);
+
 	if (copy_to_user(buf, dptr->data[s_pos] + q_pos, count)) {
 		retval = -EFAULT;
 		goto out;
 	}
 	*f_pos += count;
 	retval = count;
-
+	
   out:
 	up(&dev->sem);
 	return retval;

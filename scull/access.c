@@ -18,6 +18,7 @@
 #include <linux/tty.h>
 #include <linux/atomic.h>
 #include <linux/list.h>
+#include <linux/cred.h>
 
 #include "scull.h"		/* local definitions */
 
@@ -80,6 +81,77 @@ struct file_operations scull_sngl_fops = {
 };
 
 
+/*******************************************************************************
+ *
+ * Next, the "uid" device, It can be opened multiple times by the 
+ * same user, but access is denied to other users if the device is open
+ */
+
+static struct scull_dev scull_u_device;
+static int scull_u_count;	/* initialized to 0 by default */
+
+//static uid_t scull_u_owner;	/* initialized to 0 by default */
+static kuid_t scull_u_owner;	/* initialized to 0 by default */
+
+static spinlock_t scull_u_lock;
+
+static int scull_u_open(struct inode *inode, struct file *filp)
+{
+	struct scull_dev *dev = &scull_u_device;	/* device information */
+
+	//spin_lock_init(&scull_u_lock);
+
+	spin_lock(&scull_u_lock);
+
+	if (scull_u_count &&
+			(!uid_eq(scull_u_owner, current_uid())) &&	/* allow user */
+			(!uid_eq(scull_u_owner, current_euid())) &&	/* allow whoever did su */
+			!capable(CAP_DAC_OVERRIDE)) {	/* still allow root */
+		spin_unlock(&scull_u_lock);
+		return -EBUSY;	/* -EPERM would confuse the user */
+	}
+
+	if (scull_u_count == 0)	/* first user to open this file */
+		scull_u_owner = current_uid();	/* grab it */
+
+	scull_u_count++;
+	spin_unlock(&scull_u_lock);
+
+	/* then, everything else is copied from the bare scull device */
+	if ((filp->f_flags & O_ACCMODE) == O_WRONLY) {
+		if (down_interruptible(&dev->sem))
+			return -ERESTARTSYS;
+		scull_trim(dev);
+		up(&dev->sem);
+	}
+
+	filp->private_data = dev;
+	return 0;	/* success */
+}
+
+static int scull_u_release(struct inode *inode, struct file *filp)
+{
+	spin_lock(&scull_u_lock);
+	scull_u_count--;	/* nothing else */
+	spin_unlock(&scull_u_lock);
+	return 0;
+}
+
+/*
+ * The other operations for the device come from the bare device
+ */
+struct file_operations scull_user_fops = {
+	.owner = 	THIS_MODULE,
+	.llseek = 	scull_llseek,
+	.read = 	scull_read,
+	.write = 	scull_write,
+	.compat_ioctl = scull_ioctl,
+	.open = 	scull_u_open,
+	.release = 	scull_u_release,
+};
+
+
+
 /********************************************************************************
  *
  * And the init and cleanup functions come last
@@ -91,9 +163,10 @@ static struct scull_adev_info {
 	struct file_operations *fops;
 } scull_access_devs[] = {
 	{ "scullsingle", &scull_s_device, &scull_sngl_fops },
+	{ "sculluid", &scull_u_device, &scull_user_fops },
 };
 
-#define SCULL_N_ADEVS 1
+#define SCULL_N_ADEVS 2
 
 /*
  * Set up a single device.
@@ -132,6 +205,8 @@ int scull_access_init(dev_t firstdev)
 		return 0;
 	}
 	scull_a_firstdev = firstdev;
+
+	spin_lock_init(&scull_u_lock);
 
 	/* Set up each device */
 	for (i = 0; i < SCULL_N_ADEVS; i++)
