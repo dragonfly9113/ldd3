@@ -151,6 +151,82 @@ struct file_operations scull_user_fops = {
 };
 
 
+/********************************************************************************
+ *
+ * Next, the device with blocking-open based on uid
+ */
+
+static struct scull_dev scull_w_device;
+static int scull_w_count;	/* initialized to 0 by default */
+static kuid_t scull_w_owner;	/* initialized to 0 by default */
+static DECLARE_WAIT_QUEUE_HEAD(scull_w_wait);
+static spinlock_t scull_w_lock;
+
+static inline int scull_w_available(void)
+{
+	return scull_w_count == 0 ||
+		uid_eq(scull_w_owner, current_uid()) ||
+		uid_eq(scull_w_owner, current_euid()) ||
+		capable(CAP_DAC_OVERRIDE);
+}
+
+static int scull_w_open(struct inode *indoe, struct file *filp)
+{
+	struct scull_dev *dev = &scull_w_device;	/* device information */
+
+	spin_lock(&scull_w_lock);
+	while (! scull_w_available()) {
+		spin_unlock(&scull_w_lock);
+		if (filp->f_flags & O_NONBLOCK) return -EAGAIN;
+		if (wait_event_interruptible(scull_w_wait, scull_w_available()))
+			return ERESTARTSYS;	/* tell the fs layer to handle it */
+		spin_lock(&scull_w_lock);
+	}
+	
+	if (scull_w_count == 0)
+		scull_w_owner = current_uid();	/* grab it */
+	scull_w_count++;
+	spin_unlock(&scull_w_lock);
+
+	/* then, everything else is copied from the bare scull device */
+	if ((filp->f_flags & O_ACCMODE) == O_WRONLY) {
+		if (down_interruptible(&dev->sem))
+			return -ERESTARTSYS;
+		scull_trim(dev);
+		up(&dev->sem);
+	}
+
+	filp->private_data = dev;
+	return 0;	/* success */
+}
+
+static int scull_w_release(struct inode *inode, struct file *filp)
+{
+	int temp;
+
+	spin_lock(&scull_w_lock);
+	scull_w_count--;
+	temp = scull_w_count;
+	spin_unlock(&scull_w_lock);
+
+	if (temp == 0)
+		wake_up_interruptible_sync(&scull_w_wait);	/* awake other uid's */
+	return 0;
+}
+
+/*
+ * The other oerations for the device come from the bare device
+ */
+struct file_operations scull_wusr_fops = {
+	.owner = 	THIS_MODULE,
+	.llseek = 	scull_llseek,
+	.read = 	scull_read,
+	.write = 	scull_write,
+	.compat_ioctl = scull_ioctl,
+	.open = 	scull_w_open,
+	.release = 	scull_w_release,
+};
+
 
 /********************************************************************************
  *
@@ -164,9 +240,10 @@ static struct scull_adev_info {
 } scull_access_devs[] = {
 	{ "scullsingle", &scull_s_device, &scull_sngl_fops },
 	{ "sculluid", &scull_u_device, &scull_user_fops },
+	{ "scullwuid", &scull_w_device, &scull_wusr_fops},
 };
 
-#define SCULL_N_ADEVS 2
+#define SCULL_N_ADEVS 3
 
 /*
  * Set up a single device.
@@ -198,6 +275,8 @@ int scull_access_init(dev_t firstdev)
 {
 	int result, i;
 
+	PDEBUG("scull_access_init() is called, firstdev = 0x%x\n", firstdev);
+
 	/* Get our number space */
 	result = register_chrdev_region(firstdev, SCULL_N_ADEVS, "sculla");
 	if (result < 0) {
@@ -207,6 +286,7 @@ int scull_access_init(dev_t firstdev)
 	scull_a_firstdev = firstdev;
 
 	spin_lock_init(&scull_u_lock);
+	spin_lock_init(&scull_w_lock);
 
 	/* Set up each device */
 	for (i = 0; i < SCULL_N_ADEVS; i++)
@@ -222,6 +302,8 @@ void scull_access_cleanup(void)
 {
 	//struct scull_listitem *lptr, *next;
 	int i;
+
+	PDEBUG("scull_access_cleanup() is called\n");
 
 	/* Clean up the static devs */
 	for (i = 0; i < SCULL_N_ADEVS; i++) {
