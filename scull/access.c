@@ -48,6 +48,8 @@ static int scull_s_open(struct inode *inode, struct file *filp)
 		return -EBUSY;	/* already open */
 	}
 
+	PDEBUG("After atomic_dec_and_test(), scull_s_available = %i\n", atomic_read(&scull_s_available));
+
 	/* then, everything else is copied from the base scull device */
 	if ((filp->f_flags & O_ACCMODE) == O_WRONLY)
 		scull_trim(dev);
