@@ -224,13 +224,32 @@ static ssize_t scull_p_write(struct file *filp, const char __user *buf, size_t c
 
 static unsigned int scull_p_poll(struct file *filp, poll_table *wait)
 {
-	return 0;
+	struct scull_pipe *dev = filp->private_data;
+	unsigned int mask = 0;
+
+	/*
+	 * The buffer is circular; it is considered full
+	 * if "wp" is right behind "rp" and empty if the
+	 * two are equal.
+	 */
+	down(&dev->sem);
+	poll_wait(filp, &dev->inq, wait);
+	poll_wait(filp, &dev->outq, wait);
+	if (dev->rp != dev->wp)
+		mask |= POLLIN | POLLRDNORM;	/* readable */
+	if (spacefree(dev))
+		mask |= POLLOUT | POLLWRNORM;	/* writable */
+	up(&dev->sem);
+	return mask;
 }
 
 static int scull_p_fasync(int fd, struct file *filp, int mode)
 {
-	return 0;
+	struct scull_pipe *dev = filp->private_data;
+
+	return fasync_helper(fd, filp, mode, &dev->async_queue);
 }
+
 
 #ifdef SCULL_DEBUG
 
