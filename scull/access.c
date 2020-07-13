@@ -41,6 +41,8 @@ static int scull_s_open(struct inode *inode, struct file *filp)
 {
 	struct scull_dev *dev = &scull_s_device;	/* device information */
 
+	PDEBUG("scull_s_open() is called, scull_s_available = %i\n", atomic_read(&scull_s_available));
+
 	if (! atomic_dec_and_test(&scull_s_available)) {
 		atomic_inc(&scull_s_available);
 		return -EBUSY;	/* already open */
@@ -56,6 +58,9 @@ static int scull_s_open(struct inode *inode, struct file *filp)
 static int scull_s_release(struct inode *inode, struct file *filp)
 {
 	atomic_inc(&scull_s_available);	/* release the device */
+
+	PDEBUG("scull_s_release() is called, scull_s_available = %i\n", atomic_read(&scull_s_available));
+
 	return 0;
 }
 

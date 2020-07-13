@@ -582,7 +582,7 @@ void scull_cleanup_module(void)
 
 	/* and call the cleanup functions for friend devices */
 	scull_p_cleanup();
-	//scull_access_cleanup();
+	scull_access_cleanup();
 }
 
 /*
@@ -646,7 +646,7 @@ int scull_init_module(void)
 	/* At this point call the init function for any friend device */
 	dev = MKDEV(scull_major, scull_minor + scull_nr_devs);
 	dev += scull_p_init(dev);
-	//dev += scull_access_init(dev);	
+	dev += scull_access_init(dev);	
 
 #ifdef SCULL_DEBUG	/* only when debugging */
 	scull_create_proc();
