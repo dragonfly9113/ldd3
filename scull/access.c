@@ -19,6 +19,7 @@
 #include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/cred.h>
+#include <linux/sched/signal.h>
 
 #include "scull.h"		/* local definitions */
 
@@ -89,20 +90,15 @@ struct file_operations scull_sngl_fops = {
 
 static struct scull_dev scull_u_device;
 static int scull_u_count;	/* initialized to 0 by default */
-
 //static uid_t scull_u_owner;	/* initialized to 0 by default */
 static kuid_t scull_u_owner;	/* initialized to 0 by default */
-
-static spinlock_t scull_u_lock;
+static DEFINE_SPINLOCK(scull_u_lock);
 
 static int scull_u_open(struct inode *inode, struct file *filp)
 {
 	struct scull_dev *dev = &scull_u_device;	/* device information */
 
-	//spin_lock_init(&scull_u_lock);
-
 	spin_lock(&scull_u_lock);
-
 	if (scull_u_count &&
 			(!uid_eq(scull_u_owner, current_uid())) &&	/* allow user */
 			(!uid_eq(scull_u_owner, current_euid())) &&	/* allow whoever did su */
@@ -160,7 +156,7 @@ static struct scull_dev scull_w_device;
 static int scull_w_count;	/* initialized to 0 by default */
 static kuid_t scull_w_owner;	/* initialized to 0 by default */
 static DECLARE_WAIT_QUEUE_HEAD(scull_w_wait);
-static spinlock_t scull_w_lock;
+static DEFINE_SPINLOCK(scull_w_lock);
 
 static inline int scull_w_available(void)
 {
@@ -228,6 +224,107 @@ struct file_operations scull_wusr_fops = {
 };
 
 
+/*********************************************************************************
+ *
+ * Finally the 'cloned' private device. This is trickier because it
+ * involves list management, and dynamic allocation.
+ */
+
+/* The clone-specific data structure includes a key field */
+
+struct scull_listitem {
+	struct scull_dev device;
+	dev_t key;
+	struct list_head list;
+};
+
+/* The list of devices, and a lock to protect it */
+static LIST_HEAD(scull_c_list);
+static DEFINE_SPINLOCK(scull_c_lock);
+
+/* A placeholder scull_dev which really just holds the cdev stuff */
+static struct scull_dev scull_c_device;
+
+/* Look for a device or create one if missing */
+static struct scull_dev *scull_c_lookfor_device(dev_t key)
+{
+	struct scull_listitem *lptr;
+
+	list_for_each_entry(lptr, &scull_c_list, list) {
+		if (lptr->key == key)
+			return &(lptr->device);
+	}
+
+	/* not found */
+	lptr = kmalloc(sizeof(struct scull_listitem), GFP_KERNEL);	
+	if (!lptr)
+		return NULL;
+
+	/* initialize the device */
+	memset(lptr, 0, sizeof(struct scull_listitem));
+	lptr->key = key;
+	scull_trim(&lptr->device);	/* initialize it */
+	sema_init(&lptr->device.sem, 1);
+
+	/* place it in the list */
+	list_add(&lptr->list, &scull_c_list);
+
+	return &lptr->device;
+}
+
+static int scull_c_open(struct inode *inode, struct file *filp)
+{
+	struct scull_dev *dev;
+	dev_t key;
+
+	if (!current->signal->tty) {
+		PDEBUG("Process \"%s\" has no ctl tty\n", current->comm);
+		return -EINVAL;
+	}
+	key = tty_devnum(current->signal->tty);
+	
+	/* look for a scullc device in the list */
+	spin_lock(&scull_c_lock);
+	dev = scull_c_lookfor_device(key);
+	spin_unlock(&scull_c_lock);
+
+	if (!dev)
+		return -ENOMEM;
+
+	/* then, everything else is copied from the bare scull device */
+	if ((filp->f_flags & O_ACCMODE) == O_WRONLY) {
+		if (down_interruptible(&dev->sem))
+			return -ERESTARTSYS;
+		scull_trim(dev);
+		up(&dev->sem);
+	}
+	filp->private_data = dev;
+	return 0;	/* success */
+}
+
+static int scull_c_release(struct inode *inode, struct file *filp)
+{
+	/*
+	 * Nothing to do, because the device is persistent.
+	 * A 'real' cloned device should be freed on last close
+	 */
+	return 0;
+}
+
+/*
+ * The other oerations for the device come from the bare device
+ */
+struct file_operations scull_priv_fops = {
+	.owner = 	THIS_MODULE,
+	.llseek = 	scull_llseek,
+	.read = 	scull_read,
+	.write = 	scull_write,
+	.compat_ioctl = scull_ioctl,
+	.open = 	scull_c_open,
+	.release = 	scull_c_release,
+};
+
+
 /********************************************************************************
  *
  * And the init and cleanup functions come last
@@ -241,9 +338,10 @@ static struct scull_adev_info {
 	{ "scullsingle", &scull_s_device, &scull_sngl_fops },
 	{ "sculluid", &scull_u_device, &scull_user_fops },
 	{ "scullwuid", &scull_w_device, &scull_wusr_fops},
+	{ "scullpriv", &scull_c_device, &scull_priv_fops},
 };
 
-#define SCULL_N_ADEVS 3
+#define SCULL_N_ADEVS 4
 
 /*
  * Set up a single device.
@@ -285,9 +383,6 @@ int scull_access_init(dev_t firstdev)
 	}
 	scull_a_firstdev = firstdev;
 
-	spin_lock_init(&scull_u_lock);
-	spin_lock_init(&scull_w_lock);
-
 	/* Set up each device */
 	for (i = 0; i < SCULL_N_ADEVS; i++)
 		scull_access_setup(firstdev + i, scull_access_devs + i);
@@ -300,7 +395,7 @@ int scull_access_init(dev_t firstdev)
  */
 void scull_access_cleanup(void)
 {
-	//struct scull_listitem *lptr, *next;
+	struct scull_listitem *lptr, *next;
 	int i;
 
 	PDEBUG("scull_access_cleanup() is called\n");
@@ -312,8 +407,12 @@ void scull_access_cleanup(void)
 		scull_trim(scull_access_devs[i].sculldev);
 	}
 
-	/* TODO And all the cloned devices */
-
+	/* And all the cloned devices */
+	list_for_each_entry_safe(lptr, next, &scull_c_list, list) {
+		list_del(&lptr->list);
+		scull_trim(&lptr->device);
+		kfree(lptr);
+	}
 
 	/* Free up our number space */
 	unregister_chrdev_region(scull_a_firstdev, SCULL_N_ADEVS);
