@@ -313,15 +313,28 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count,
 	if (count > quantum - q_pos)
 		count = quantum - q_pos;
 
-	ssleep(5);
-
 	if (copy_to_user(buf, dptr->data[s_pos] + q_pos, count)) {
 		retval = -EFAULT;
 		goto out;
 	}
 	*f_pos += count;
 	retval = count;
-	
+
+	/* try out jiffies and counter registers */
+#if 0
+	unsigned long long ini, end;
+	unsigned long t1 = jiffies;
+	ini = rdtsc();
+	end = rdtsc();
+	unsigned long t2 = jiffies;
+	long diff = (long)t2 - (long)t1;
+	PDEBUG("time lapse: %li, t1 = %li,t2=%li,	by jiffies: %li us\n", (long)end - (long)ini, (long)t1, (long)t2, diff * 1000 * 1000 / HZ);
+
+	u64 c1 = get_cycles();
+	u64 c2 = get_cycles();
+	PDEBUG("time lapses by get_cycles(): %li\n", (long)c2 - (long)c1);
+#endif
+
   out:
 	up(&dev->sem);
 	return retval;
